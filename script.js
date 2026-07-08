@@ -126,65 +126,219 @@ const initCarousel = () => {
 
   if (!carousel) return;
 
-  const cards = carousel.querySelectorAll('.faculty-card');
-  const totalCards = cards.length;
-  const visibleCards = 3;
+  const wrapper = carousel.closest('.carousel-wrapper');
+  const originalCards = Array.from(carousel.querySelectorAll('.faculty-card'));
+  let carouselCards = [];
   let currentIndex = 0;
-  let autoRotateInterval;
+  let visibleCards = 1;
+  let clones = 0;
+  let resizeTimeout;
 
-  // Create indicators
-  for (let i = 0; i < Math.ceil(totalCards / visibleCards); i++) {
-    const dot = document.createElement('div');
-    dot.className = `carousel-indicator ${i === 0 ? 'active' : ''}`;
-    dot.addEventListener('click', () => goToSlide(i));
-    indicatorsContainer.appendChild(dot);
-  }
+  const clearCarousel = () => {
+    carousel.innerHTML = '';
+  };
 
-  const updateCarousel = () => {
-    // Static layout - no transform needed
-    // Update indicators (disabled for static layout)
-    document.querySelectorAll('.carousel-indicator').forEach((dot) => {
-      dot.classList.remove('active');
+  const buildCarousel = () => {
+    clearCarousel();
+    // measure card width using a temporary off-DOM clone if needed
+    const temp = document.createElement('div');
+    temp.style.position = 'absolute';
+    temp.style.visibility = 'hidden';
+    temp.style.pointerEvents = 'none';
+    temp.appendChild(originalCards[0].cloneNode(true));
+    document.body.appendChild(temp);
+    const cardW = temp.firstElementChild.getBoundingClientRect().width || 250;
+    document.body.removeChild(temp);
+
+    visibleCards = Math.max(1, Math.floor(wrapper.clientWidth / (cardW + 16))); // include gap estimate
+    clones = visibleCards; // number of clones on each side
+
+    // create clones before (last N), originals, clones after (first N)
+    const before = originalCards.slice(-clones).map(n => n.cloneNode(true));
+    const after = originalCards.slice(0, clones).map(n => n.cloneNode(true));
+
+    before.forEach(n => carousel.appendChild(n));
+    originalCards.forEach(n => carousel.appendChild(n));
+    after.forEach(n => carousel.appendChild(n));
+
+    carouselCards = Array.from(carousel.querySelectorAll('.faculty-card'));
+
+    // set initial index so the first real card is centered
+    currentIndex = clones;
+    createIndicators();
+    // position without animation
+    carousel.style.transition = 'none';
+    const off = getOffsetForIndex(currentIndex);
+    carousel.style.transform = `translateX(-${off}px)`;
+    // force reflow then restore transition
+    // eslint-disable-next-line no-unused-expressions
+    carousel.getBoundingClientRect();
+    carousel.style.transition = '';
+    // attach touch/tap handlers after building DOM
+    setupTouchAndTap();
+  };
+
+  // Touch / swipe and tap support for mobile
+  const setupTouchAndTap = () => {
+    let startX = 0;
+    let startY = 0;
+    let isDown = false;
+    let moved = false;
+    const threshold = 40; // px to trigger swipe
+
+    const onStart = (e) => {
+      isDown = true;
+      moved = false;
+      startX = e.touches ? e.touches[0].clientX : e.clientX;
+      startY = e.touches ? e.touches[0].clientY : e.clientY;
+    };
+
+    const onMove = (e) => {
+      if (!isDown) return;
+      const x = e.touches ? e.touches[0].clientX : e.clientX;
+      const y = e.touches ? e.touches[0].clientY : e.clientY;
+      const dx = x - startX;
+      const dy = y - startY;
+      if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy)) {
+        moved = true;
+      }
+    };
+
+    const onEnd = (e) => {
+      if (!isDown) return;
+      isDown = false;
+      const endX = (e.changedTouches && e.changedTouches[0]) ? e.changedTouches[0].clientX : (e.clientX || startX);
+      const dx = endX - startX;
+      if (Math.abs(dx) > threshold) {
+        if (dx > 0) prevSlide(); else nextSlide();
+      }
+    };
+
+    // pointer events fallback
+    wrapper.addEventListener('touchstart', onStart, { passive: true });
+    wrapper.addEventListener('touchmove', onMove, { passive: true });
+    wrapper.addEventListener('touchend', onEnd);
+    wrapper.addEventListener('pointerdown', onStart);
+    wrapper.addEventListener('pointermove', onMove);
+    wrapper.addEventListener('pointerup', onEnd);
+
+    // tap to toggle overlay on touch devices
+    const isTouchDevice = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+    if (isTouchDevice) {
+      carouselCards.forEach((card) => {
+        card.addEventListener('click', (ev) => {
+          // if user was swiping, ignore the click
+          if (moved) { moved = false; return; }
+          card.classList.toggle('overlay-visible');
+        });
+      });
+    }
+  };
+
+  const getOffsetForIndex = (index) => {
+    const card = carouselCards[index];
+    if (!card) return 0;
+    const cardCenter = card.offsetLeft + card.offsetWidth / 2;
+    const wrapperCenter = wrapper.clientWidth / 2;
+    return Math.max(0, cardCenter - wrapperCenter);
+  };
+
+  const createIndicators = () => {
+    indicatorsContainer.innerHTML = '';
+    const pages = Math.ceil(originalCards.length / visibleCards);
+    for (let i = 0; i < pages; i++) {
+      const dot = document.createElement('div');
+      dot.className = `carousel-indicator ${i === 0 ? 'active' : ''}`;
+      dot.addEventListener('click', () => goToSlide(i * visibleCards));
+      indicatorsContainer.appendChild(dot);
+    }
+  };
+
+  const updateIndicators = () => {
+    const pages = Math.ceil(originalCards.length / visibleCards);
+    const logicalIndex = (currentIndex - clones + originalCards.length) % originalCards.length;
+    const pageIndex = Math.floor(logicalIndex / visibleCards) % pages;
+    document.querySelectorAll('.carousel-indicator').forEach((dot, i) => {
+      dot.classList.toggle('active', i === pageIndex);
     });
   };
 
+  const scrollToIndex = (animate = true) => {
+    if (!carouselCards.length) return;
+    if (!animate) carousel.style.transition = 'none';
+    const off = getOffsetForIndex(currentIndex);
+    carousel.style.transform = `translateX(-${off}px)`;
+    if (!animate) {
+      // force reflow then restore
+      // eslint-disable-next-line no-unused-expressions
+      carousel.getBoundingClientRect();
+      carousel.style.transition = '';
+    }
+    updateIndicators();
+    // update center class on cards
+    updateCenterClasses();
+  };
+
   const nextSlide = () => {
-    currentIndex = (currentIndex + 1) % totalCards;
-    updateCarousel();
+    currentIndex += 1;
+    scrollToIndex(true);
   };
 
   const prevSlide = () => {
-    currentIndex = (currentIndex - 1 + totalCards) % totalCards;
-    updateCarousel();
+    currentIndex -= 1;
+    scrollToIndex(true);
   };
 
-  const goToSlide = (index) => {
-    currentIndex = index * visibleCards;
-    updateCarousel();
-    resetAutoRotate();
+  const goToSlide = (logicalIndex) => {
+    // logicalIndex is index within originals
+    currentIndex = clones + logicalIndex;
+    scrollToIndex(true);
   };
 
-  const startAutoRotate = () => {
-    // Auto-rotation disabled for static layout
+  const handleTransitionEnd = () => {
+    const originals = originalCards.length;
+    // if we've moved into clones after the originals
+    if (currentIndex >= clones + originals) {
+      const overshoot = currentIndex - (clones + originals);
+      currentIndex = clones + overshoot;
+      scrollToIndex(false);
+    }
+    // if we've moved into clones before the originals
+    if (currentIndex < clones) {
+      const undershoot = (currentIndex - clones + originals) % originals;
+      currentIndex = clones + undershoot;
+      scrollToIndex(false);
+    }
+    // ensure center class is correct after any snapping
+    updateCenterClasses();
   };
 
-  const resetAutoRotate = () => {
-    // Auto-rotation disabled for static layout
+  const updateCenterClasses = () => {
+    if (!carouselCards || !carouselCards.length) return;
+    carouselCards.forEach((card, i) => {
+      if (i === currentIndex) {
+        card.classList.add('center');
+      } else {
+        card.classList.remove('center');
+      }
+    });
   };
 
-  prevBtn?.addEventListener('click', () => {
-    // Carousel navigation disabled for static layout
+  prevBtn?.addEventListener('click', prevSlide);
+  nextBtn?.addEventListener('click', nextSlide);
+  carousel.addEventListener('transitionend', handleTransitionEnd);
+
+  const rebuild = () => {
+    buildCarousel();
+  };
+
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimeout);
+    resizeTimeout = setTimeout(() => rebuild(), 150);
   });
 
-  nextBtn?.addEventListener('click', () => {
-    // Carousel navigation disabled for static layout
-  });
-
-  carousel.addEventListener('mouseenter', () => clearInterval(autoRotateInterval));
-  carousel.addEventListener('mouseleave', startAutoRotate);
-
-  // Static layout - no auto-rotation
-  updateCarousel();
+  // initialize
+  buildCarousel();
 };
 
 // Initialize carousel when DOM is ready
